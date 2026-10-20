@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YOLOv8 · ONNX Runtime Web 实时检测</title>
+
+<!-- ============================================================ -->
+<!-- 本地引入 ONNX Runtime Web（ort.min.js 与本 HTML 同目录）       -->
+<!-- ============================================================ -->
+<script src="./ort.min.js"></script>
+
+<style>
+/* ===== CSS 变量 ===== */
+:root{
+  --bg:#0F1117; --card:#1A1D29; --card2:#232735; --border:#2A2E3F;
+  --primary:#3B82F6; --green:#22C55E; --red:#EF4444; --orange:#F59E0B;
+  --text:#E5E7EB; --text2:#9CA3AF; --text3:#6B7280;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:-apple-system,"Microsoft YaHei","PingFang SC",sans-serif;
+  font-size:16px;line-height:1.6;
+  display:flex;flex-direction:column;align-items:center;
+  padding:16px;gap:14px;
+}
+
+/* ===== 使用说明提示框 ===== */
+#notice{
+  width:100%;max-width:720px;
+  background:var(--card2);border:2px solid var(--orange);border-radius:12px;
+  padding:14px 18px;font-size:15px;color:var(--text);line-height:1.8;
+}
+#notice strong{color:var(--orange)}
+#notice code{
+  background:var(--bg);padding:2px 6px;border-radius:4px;
+  font-family:Consolas,monospace;color:var(--green);font-size:14px;
+}
+
+/* ===== 标题 ===== */
+header{width:100%;max-width:720px;text-align:center}
+header h1{font-size:24px;font-weight:700}
+header p{color:var(--text2);font-size:14px;margin-top:2px}
+
+/* ===== 状态条 ===== */
+#statusBar{
+  width:100%;max-width:720px;
+  background:var(--card);border:2px solid var(--border);border-radius:12px;
+  padding:12px 16px;display:flex;align-items:center;gap:10px;
+}
+#statusDot{width:12px;height:12px;border-radius:50%;background:var(--text3);flex-shrink:0}
+#statusDot.loading{background:var(--orange);animation:pulse 1s infinite}
+#statusDot.ready{background:var(--green)}
+#statusDot.detecting{background:var(--primary);animation:pulse 0.8s infinite}
+#statusDot.error{background:var(--red)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+#statusText{font-size:18px;font-weight:600;flex:1}
+#statusHint{font-size:14px;color:var(--text2)}
+#fps{font-size:14px;color:var(--primary);font-weight:700;margin-left:8px;min-width:60px;text-align:right}
+
+/* ===== 摄像头区域 ===== */
+#camWrap{
+  width:100%;max-width:720px;position:relative;
+  background:#000;border:3px solid var(--border);border-radius:12px;
+  overflow:hidden;aspect-ratio:4/3;
+}
+#video{width:100%;height:100%;object-fit:cover;display:block}
+#overlay{position:absolute;top:0;left:0;width:100%;height:100%}
+#placeholder{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:10px;
+  color:var(--text2);background:var(--card2);font-size:18px;
+}
+#placeholder .icon{font-size:48px}
+
+/* ===== 控制按钮 ===== */
+#controls{width:100%;max-width:720px;display:flex;gap:10px}
+.btn{
+  flex:1;padding:16px;border:none;border-radius:10px;
+  font-size:18px;font-weight:700;cursor:pointer;color:#fff;
+  transition:transform .1s,opacity .2s;
+}
+.btn:active{transform:scale(0.97)}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+#btnStart{background:var(--green)}
+#btnStop{background:var(--red)}
+
+/* ===== 结果面板 ===== */
+#resultPanel{
+  width:100%;max-width:720px;background:var(--card);
+  border:2px solid var(--border);border-radius:12px;overflow:hidden;
+}
+#resultHeader{
+  padding:10px 16px;background:var(--card2);
+  display:flex;justify-content:space-between;align-items:center;
+  border-bottom:2px solid var(--border);
+}
+#resultHeader h2{font-size:16px}
+#resultCount{font-size:15px;color:var(--primary);font-weight:700}
+#resultList{max-height:220px;overflow-y:auto}
+#resultList::-webkit-scrollbar{width:6px}
+#resultList::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.result-item{
+  padding:10px 16px;display:flex;align-items:center;gap:10px;
+  border-bottom:1px solid var(--border);
+}
+.result-item:last-child{border-bottom:none}
+.ri-color{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+.ri-label{flex:1;font-size:16px}
+.ri-conf{font-size:14px;color:var(--text2)}
+.result-empty{padding:20px;text-align:center;color:var(--text3);font-size:15px}
+
+/* ===== 日志面板 ===== */
+#logPanel{
+  width:100%;max-width:720px;background:var(--card);
+  border:2px solid var(--border);border-radius:12px;padding:10px 16px;
+}
+#logPanel h3{font-size:14px;color:var(--text2);margin-bottom:6px}
+#log{max-height:120px;overflow-y:auto;font-size:13px;color:var(--text2);font-family:Consolas,monospace}
+#log div{padding:1px 0}
+#log .err{color:var(--red)}
+#log .ok{color:var(--green)}
+#log .warn{color:var(--orange)}
+
+/* ===== 页脚 ===== */
+footer{width:100%;max-width:720px;text-align:center;color:var(--text3);font-size:13px;padding:4px}
+</style>
+</head>
+<body>
+
+<!-- ===== 使用说明（必须醒目展示） ===== -->
+<div id="notice">
+  <strong>⚠ 使用说明：</strong><br>
+  ① 将 <code>exp-3.onnx</code> 与本 HTML 文件放在<strong>同一个目录</strong>下<br>
+  ② 在该目录运行 <code>python -m http.server 8080</code> 启动本地服务器<br>
+  ③ 浏览器访问 <code>http://localhost:8080/yolo.html</code><br>
+  ④ <strong>禁止双击直接打开 HTML</strong>（file:// 协议无法 fetch .onnx 模型文件）
+</div>
+
+<header>
+  <h1>YOLOv8 · ONNX Runtime Web</h1>
+  <p>纯前端推理 · 无后端 · traffic_cone / bollard / barricade</p>
+</header>
+
+<!-- ===== 状态条 ===== -->
+<div id="statusBar">
+  <div id="statusDot" class="loading"></div>
+  <div id="statusText">正在初始化…</div>
+  <div id="statusHint"></div>
+  <span id="fps"></span>
+</div>
+
+<!-- ===== 摄像头 + Canvas 叠加层 ===== -->
+<div id="camWrap">
+  <!-- playsinline + webkit-playsinline：防止 iOS 自动全屏 -->
+  <video id="video" autoplay playsinline webkit-playsinline muted></video>
+  <canvas id="overlay"></canvas>
+  <div id="placeholder">
+    <div class="icon">📷</div>
+    <div>点击「开始检测」启动</div>
+  </div>
+</div>
+
+<!-- ===== 控制按钮 ===== -->
+<div id="controls">
+  <button class="btn" id="btnStart" disabled>▶ 开始检测</button>
+  <button class="btn" id="btnStop" disabled>■ 停止检测</button>
+</div>
+
+<!-- ===== 检测结果列表 ===== -->
+<div id="resultPanel">
+  <div id="resultHeader">
+    <h2>检测结果</h2>
+    <span id="resultCount">0 项</span>
+  </div>
+  <div id="resultList">
+    <div class="result-empty">尚未开始</div>
+  </div>
+</div>
+
+<!-- ===== 运行日志 ===== -->
+<div id="logPanel">
+  <h3>运行日志</h3>
+  <div id="log"></div>
+</div>
+
+<footer>
+  ONNX Runtime Web 1.18.0 · YOLOv8 输出 [1, 4+nc, 8400] · Letterbox 640×640 · NMS IoU 0.5
+</footer>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================================================ */
+/* 一、配置常量                                                   */
+/* ============================================================ */
+var MODEL_PATH = "./exp-3.onnx";   // 模型路径（相对路径，与 HTML 同目录）
+var INPUT_SIZE = 640;               // 模型输入尺寸 640×640
+var NUM_CLASSES = 3;                // 类别数量
+var CONF_THRESHOLD = 0.3;           // 置信度阈值
+var NMS_THRESHOLD = 0.5;            // NMS 的 IoU 阈值
+var NUM_ANCHORS = 8400;             // YOLOv8 anchor 总数 (80²+40²+20²=8400)
+var DETECT_DELAY = 80;              // 检测循环间隔(ms)，上一帧推理完后等待时间
+
+/* 类别英文名（与模型训练时一致，顺序不能错） */
+var CLASS_NAMES = ["traffic_cone", "bollard", "barricade"];
+/* 类别中文名（用于界面显示） */
+var CLASS_LABELS_CN = ["交通锥", "护柱", "路障"];
+/* 每个类别的画框颜色 */
+var CLASS_COLORS = ["#F59E0B", "#3B82F6", "#EF4444"];
+
+/* ============================================================ */
+/* 二、DOM 元素引用                                               */
+/* ============================================================ */
+var $ = function(id){ return document.getElementById(id); };
+var video = $("video");             // 摄像头视频元素
+var overlay = $("overlay");         // 叠加画框的 canvas
+var ctx = overlay.getContext("2d");
+var placeholder = $("placeholder"); // 摄像头未启动时的占位提示
+var statusDot = $("statusDot");     // 状态指示灯
+var statusText = $("statusText");   // 状态主文字
+var statusHint = $("statusHint");   // 状态副文字
+var fpsEl = $("fps");               // FPS 显示
+var btnStart = $("btnStart");       // 开始按钮
+var btnStop = $("btnStop");         // 停止按钮
+var resultList = $("resultList");   // 结果列表容器
+var resultCount = $("resultCount"); // 结果计数
+var logEl = $("log");               // 日志容器
+
+/* ============================================================ */
+/* 三、状态变量                                                   */
+/* ============================================================ */
+var session = null;       // ONNX 推理会话
+var isRunning = false;    // 是否正在检测
+var stream = null;        // 摄像头媒体流
+var detectTimer = null;   // 检测定时器 ID
+var frameCount = 0;       // FPS 计帧器
+var fpsLastTime = Date.now();
+
+/* 复用的离屏 Canvas（避免每帧重复创建，提升性能） */
+var srcCanvas = document.createElement("canvas");  // 存放 video 当前帧（原始尺寸）
+var srcCtx = srcCanvas.getContext("2d");
+var lbCanvas = document.createElement("canvas");   // Letterbox 后的 640×640 画布
+lbCanvas.width = INPUT_SIZE;
+lbCanvas.height = INPUT_SIZE;
+var lbCtx = lbCanvas.getContext("2d");
+
+/* ============================================================ */
+/* 四、工具函数                                                   */
+/* ============================================================ */
+
+/* 日志输出（带时间戳和颜色分类） */
+function log(msg, type){
+  var d = document.createElement("div");
+  if(type) d.className = type;
+  var t = new Date().toLocaleTimeString("zh-CN", {hour12:false});
+  d.textContent = "[" + t + "] " + msg;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+  // 限制日志条数，避免内存增长
+  while(logEl.childNodes.length > 80) logEl.removeChild(logEl.firstChild);
+}
+
+/* 状态条更新 */
+function setStatus(state, text, hint){
+  statusDot.className = state || "";
+  statusText.textContent = text;
+  statusHint.textContent = hint || "";
+}
+
+/* FPS 计算（每秒更新一次显示） */
+function updateFPS(){
+  frameCount++;
+  var now = Date.now();
+  if(now - fpsLastTime >= 1000){
+    var fps = Math.round(frameCount * 1000 / (now - fpsLastTime));
+    fpsEl.textContent = fps + " FPS";
+    frameCount = 0;
+    fpsLastTime = now;
+  }
+}
+
+/* ============================================================ */
+/* 五、预处理：Letterbox                                          */
+/* 将任意尺寸图像等比缩放并居中填充到 640×640                      */
+/* 填充值 114（YOLOv8 默认灰色）                                   */
+/* 返回 { scale, padLeft, padTop } 供后处理坐标逆变换使用          */
+/* ============================================================ */
+function letterbox(srcW, srcH){
+  // 计算等比缩放比例（取宽高方向较小值，保证不超出 640）
+  var scale = Math.min(INPUT_SIZE / srcW, INPUT_SIZE / srcH);
+  var nw = Math.round(srcW * scale);  // 缩放后的宽
+  var nh = Math.round(srcH * scale);  // 缩放后的高
+  var padLeft = Math.floor((INPUT_SIZE - nw) / 2);  // 左侧填充
+  var padTop = Math.floor((INPUT_SIZE - nh) / 2);   // 上侧填充
+
+  // 先用灰色 114 填满整个 640×640 画布
+  lbCtx.fillStyle = "rgb(114,114,114)";
+  lbCtx.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
+
+  // 再将原图等比缩放后绘制到居中位置
+  lbCtx.drawImage(srcCanvas, 0, 0, srcW, srcH, padLeft, padTop, nw, nh);
+
+  return { scale: scale, padLeft: padLeft, padTop: padTop };
+}
+
+/* ============================================================ */
+/* 六、预处理：HWC → CHW 转换 + 归一化                            */
+/* 从 640×640 画布读取像素，转为 [1,3,640,640] 的 Float32Array    */
+/*                                                                */
+/* HWC（Height×Width×Channel）：ImageData 的 RGBA 排列方式        */
+/* CHW（Channel×Height×Width）：ONNX 模型要求的输入格式           */
+/* 归一化：像素值 / 255.0 → [0.0, 1.0]                            */
+/* ============================================================ */
+function hwcToChw(){
+  var imageData = lbCtx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
+  var data = imageData.data;  // Uint8ClampedArray, RGBA 格式, HWC 排列
+  var chw = new Float32Array(3 * INPUT_SIZE * INPUT_SIZE);  // CHW 输出数组
+  var area = INPUT_SIZE * INPUT_SIZE;  // 单通道像素数
+
+  for(var h = 0; h < INPUT_SIZE; h++){
+    for(var w = 0; w < INPUT_SIZE; w++){
+      // HWC 中的源索引（每像素 4 字节：R,G,B,A）
+      var srcIdx = (h * INPUT_SIZE + w) * 4;
+      // CHW 中每通道的目标索引
+      var dstIdx = h * INPUT_SIZE + w;
+
+      // R 通道 → CHW 第 0 通道，归一化
+      chw[0 * area + dstIdx] = data[srcIdx]     / 255.0;
+      // G 通道 → CHW 第 1 通道，归一化
+      chw[1 * area + dstIdx] = data[srcIdx + 1] / 255.0;
+      // B 通道 → CHW 第 2 通道，归一化
+      chw[2 * area + dstIdx] = data[srcIdx + 2] / 255.0;
+    }
+  }
+  return chw;
+}
+
+/* ============================================================ */
+/* 七、IoU 计算（交并比）                                         */
+/* box 格式: [x1, y1, x2, y2]                                    */
+/* ============================================================ */
+function calcIoU(a, b){
+  // 计算交集矩形坐标
+  var x1 = Math.max(a[0], b[0]);
+  var y1 = Math.max(a[1], b[1]);
+  var x2 = Math.min(a[2], b[2]);
+  var y2 = Math.min(a[3], b[3]);
+  var interW = x2 - x1;
+  var interH = y2 - y1;
+  // 无交集则 IoU=0
+  if(interW <= 0 || interH <= 0) return 0;
+  var interArea = interW * interH;
+  // 计算各自面积
+  var areaA = (a[2] - a[0]) * (a[3] - a[1]);
+  var areaB = (b[2] - b[0]) * (b[3] - b[1]);
+  var union = areaA + areaB - interArea;  // 并集面积
+  return union > 0 ? interArea / union : 0;
+}
+
+/* ============================================================ */
+/* 八、NMS（非极大值抑制）                                        */
+/* 按置信度降序排列，依次保留最高分框，                            */
+/* 删除与已保留框 IoU 超过阈值的重叠框                            */
+/* 返回保留的索引数组                                            */
+/* ============================================================ */
+function nms(boxes, scores, iouThreshold){
+  // 生成索引并按分数降序排列
+  var order = [];
+  for(var i = 0; i < scores.length; i++) order.push(i);
+  order.sort(function(a, b){ return scores[b] - scores[a]; });
+
+  var keep = [];
+  while(order.length > 0){
+    // 取当前最高分框，加入保留列表
+    var current = order[0];
+    keep.push(current);
+    order.shift();  // 移除已选
+
+    // 过滤剩余框中与当前框 IoU 过大的（重叠严重）
+    var newOrder = [];
+    for(var j = 0; j < order.length; j++){
+      if(calcIoU(boxes[current], boxes[order[j]]) < iouThreshold){
+        newOrder.push(order[j]);
+      }
+    }
+    order = newOrder;
+  }
+  return keep;
+}
+
+/* ============================================================ */
+/* 九、后处理：解码 YOLOv8 输出 + NMS                             */
+/*                                                                */
+/* YOLOv8 输出张量形状: [1, 4+nc, 8400] = [1, 7, 8400]           */
+/* 数据按 row-major 排列: data[ci * 8400 + ai]                    */
+/*   ci=0,1,2,3 → cx, cy, w, h（中心点坐标+宽高，640×640 空间）   */
+/*   ci=4,5,6   → 3 个类别的置信度分数                            */
+/*   ai         → anchor 索引 (0~8399)                           */
+/* ============================================================ */
+function postprocess(outputData, lb){
+  var boxes = [];     // 候选框 [x1,y1,x2,y2]
+  var scores = [];    // 置信度
+  var classIds = [];  // 类别 ID
+  var ow = srcCanvas.width;   // 原图宽
+  var oh = srcCanvas.height;  // 原图高
+
+  // 遍历全部 8400 个 anchor
+  for(var ai = 0; ai < NUM_ANCHORS; ai++){
+
+    /* --- 第一步：在 3 个类别中找最大分数 --- */
+    var maxScore = 0;
+    var maxClassId = -1;
+    for(var ci = 0; ci < NUM_CLASSES; ci++){
+      // 类别分数在通道 4+ci，数据索引 = (4+ci) * 8400 + ai
+      var score = outputData[(4 + ci) * NUM_ANCHORS + ai];
+      if(score > maxScore){
+        maxScore = score;
+        maxClassId = ci;
+      }
+    }
+
+    /* --- 第二步：置信度过滤 --- */
+    if(maxScore < CONF_THRESHOLD) continue;
+
+    /* --- 第三步：解码 bbox (cx,cy,w,h → x1,y1,x2,y2) --- */
+    // 坐标在 640×640 空间
+    var cx = outputData[0 * NUM_ANCHORS + ai];
+    var cy = outputData[1 * NUM_ANCHORS + ai];
+    var w  = outputData[2 * NUM_ANCHORS + ai];
+    var h  = outputData[3 * NUM_ANCHORS + ai];
+    var x1 = cx - w / 2;
+    var y1 = cy - h / 2;
+    var x2 = cx + w / 2;
+    var y2 = cy + h / 2;
+
+    /* --- 第四步：逆 Letterbox，映射回原图空间 --- */
+    // 公式: x_orig = (x_640 - padLeft) / scale
+    x1 = (x1 - lb.padLeft) / lb.scale;
+    y1 = (y1 - lb.padTop)  / lb.scale;
+    x2 = (x2 - lb.padLeft) / lb.scale;
+    y2 = (y2 - lb.padTop)  / lb.scale;
+
+    /* --- 第五步：裁剪到原图范围 --- */
+    x1 = Math.max(0, Math.min(ow, x1));
+    y1 = Math.max(0, Math.min(oh, y1));
+    x2 = Math.max(0, Math.min(ow, x2));
+    y2 = Math.max(0, Math.min(oh, y2));
+
+    boxes.push([x1, y1, x2, y2]);
+    scores.push(maxScore);
+    classIds.push(maxClassId);
+  }
+
+  /* --- 第六步：NMS 过滤重叠框 --- */
+  var keepIndices = nms(boxes, scores, NMS_THRESHOLD);
+
+  /* --- 第七步：组装最终结果 --- */
+  var results = [];
+  for(var k = 0; k < keepIndices.length; k++){
+    var idx = keepIndices[k];
+    results.push({
+      box: boxes[idx],       // [x1,y1,x2,y2] 原图坐标
+      score: scores[idx],    // 置信度
+      classId: classIds[idx] // 类别 ID
+    });
+  }
+  return results;
+}
+
+/* ============================================================ */
+/* 十、在 Canvas 上绘制检测框                                    */
+/* ============================================================ */
+function drawDetections(detections){
+  var ow = srcCanvas.width;
+  var oh = srcCanvas.height;
+  // 设置 canvas 内部尺寸为原图尺寸（坐标直接对应）
+  overlay.width = ow;
+  overlay.height = oh;
+  ctx.clearRect(0, 0, ow, oh);
+
+  for(var i = 0; i < detections.length; i++){
+    var d = detections[i];
+    var x1 = d.box[0], y1 = d.box[1], x2 = d.box[2], y2 = d.box[3];
+    var color = CLASS_COLORS[d.classId];
+    var label = CLASS_LABELS_CN[d.classId] + " " + Math.round(d.score * 100) + "%";
+
+    // 画矩形框
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = color;
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+    // 画标签背景条
+    ctx.font = "bold 18px sans-serif";
+    var tw = ctx.measureText(label).width + 10;
+    ctx.fillStyle = color;
+    ctx.fillRect(x1, y1 - 24, tw, 24);
+
+    // 画标签文字
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, x1 + 5, y1 - 6);
+  }
+}
+
+/* ============================================================ */
+/* 十一、渲染结果列表到 HTML                                     */
+/* ============================================================ */
+function renderResults(detections){
+  resultCount.textContent = detections.length + " 项";
+  if(detections.length === 0){
+    resultList.innerHTML = '<div class="result-empty">未检测到目标</div>';
+    return;
+  }
+  var html = "";
+  for(var i = 0; i < detections.length; i++){
+    var d = detections[i];
+    var pct = Math.round(d.score * 100);
+    html += '<div class="result-item">' +
+      '<span class="ri-color" style="background:' + CLASS_COLORS[d.classId] + '"></span>' +
+      '<span class="ri-label">' + CLASS_LABELS_CN[d.classId] +
+      ' (' + CLASS_NAMES[d.classId] + ')</span>' +
+      '<span class="ri-conf">' + pct + '%</span>' +
+      '</div>';
+  }
+  resultList.innerHTML = html;
+}
+
+/* ============================================================ */
+/* 十二、检测循环（async，上一帧推理完后再调度下一帧）           */
+/* ============================================================ */
+async function detectLoop(){
+  // 退出条件：未运行 / 无会话 / 视频未就绪
+  if(!isRunning || !session || !video.videoWidth){
+    if(isRunning) detectTimer = setTimeout(detectLoop, DETECT_DELAY);
+    return;
+  }
+
+  try {
+    /* --- 1. 从 video 读取当前帧到离屏 canvas --- */
+    var sw = video.videoWidth;
+    var sh = video.videoHeight;
+    srcCanvas.width = sw;
+    srcCanvas.height = sh;
+    srcCtx.drawImage(video, 0, 0, sw, sh);
+
+    /* --- 2. Letterbox 预处理 → 640×640 --- */
+    var lb = letterbox(sw, sh);
+
+    /* --- 3. HWC → CHW + 归一化 → Float32Array --- */
+    var inputData = hwcToChw();
+
+    /* --- 4. 创建 ONNX 输入张量 [1, 3, 640, 640] --- */
+    var inputTensor = new ort.Tensor("float32", inputData, [1, 3, INPUT_SIZE, INPUT_SIZE]);
+    var feeds = {};
+    feeds[session.inputNames[0]] = inputTensor;  // 输入名动态获取（通常为 "images"）
+
+    /* --- 5. ONNX 推理 --- */
+    var results = await session.run(feeds);
+    var output = results[session.outputNames[0]];  // 输出名动态获取（通常为 "output0"）
+
+    /* --- 6. 后处理：解码 + NMS --- */
+    var detections = postprocess(output.data, lb);
+
+    /* --- 7. 在 Canvas 上画检测框 --- */
+    drawDetections(detections);
+
+    /* --- 8. 更新结果列表 --- */
+    renderResults(detections);
+
+    /* --- 9. 更新 FPS --- */
+    updateFPS();
+
+  } catch(e){
+    log("检测异常: " + e.message, "err");
+  }
+
+  // 调度下一帧（递归 setTimeout，避免重叠推理）
+  if(isRunning) detectTimer = setTimeout(detectLoop, DETECT_DELAY);
+}
+
+/* ============================================================ */
+/* 十三、启动摄像头（移动端适配，后置摄像头多级降级）             */
+/* ============================================================ */
+function startCamera(){
+  return new Promise(function(resolve, reject){
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      reject(new Error("浏览器不支持摄像头 API"));
+      return;
+    }
+    var gUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+
+    /* 第一级：精确后置摄像头约束 */
+    gUM({ video: { facingMode: { exact: "environment" } }, audio: false })
+      .then(function(s){
+        stream = s; video.srcObject = s;
+        log("后置摄像头已连接（精确约束）", "ok");
+        resolve();
+      })
+      .catch(function(e1){
+        /* 部分机型不支持 exact 约束，降级为理想约束 */
+        if(e1 && (e1.name === "OverconstrainedError" || e1.name === "ConstraintNotSatisfiedError")){
+          log("精确约束不支持，降级为理想约束", "warn");
+          return gUM({ video: { facingMode: "environment" }, audio: false })
+            .then(function(s){
+              stream = s; video.srcObject = s;
+              log("后置摄像头已连接（理想约束）", "ok");
+              resolve();
+            })
+            .catch(function(e2){
+              /* 再降级：任意摄像头 */
+              log("理想约束失败，降级为任意摄像头", "warn");
+              return gUM({ video: true, audio: false })
+                .then(function(s){
+                  stream = s; video.srcObject = s;
+                  log("摄像头已连接（任意）", "ok");
+                  resolve();
+                })
+                .catch(function(e3){ reject(e3); });
+            });
+        } else {
+          /* 非约束错误（如权限拒绝），直接抛出 */
+          reject(e1);
+        }
+      });
+  });
+}
+
+/* ============================================================ */
+/* 十四、开始检测                                                */
+/* ============================================================ */
+async function startDetection(){
+  if(isRunning) return;
+  btnStart.disabled = true;
+  setStatus("loading", "正在启动摄像头…", "");
+
+  try {
+    await startCamera();
+    placeholder.style.display = "none";
+    isRunning = true;
+    btnStop.disabled = false;
+    setStatus("detecting", "检测中…", "YOLOv8 实时推理");
+    log("开始检测循环", "ok");
+    detectLoop();  // 启动检测循环
+  } catch(e){
+    /* 权限异常分类捕获 */
+    var errName = e && e.name ? e.name : "Unknown";
+    var msg = e && e.message ? e.message : String(e);
+
+    if(errName === "NotAllowedError" || errName === "PermissionDeniedError" || errName === "SecurityError"){
+      // 用户拒绝授权
+      log("摄像头授权被拒绝[" + errName + "]: " + msg, "err");
+      setStatus("error", "授权被拒绝", "请在浏览器中允许摄像头权限");
+    } else if(errName === "NotFoundError" || errName === "DevicesNotFoundError"){
+      // 没有可用摄像头
+      log("无可用摄像头[" + errName + "]: " + msg, "err");
+      setStatus("error", "无摄像头", "请检查设备是否有摄像头");
+    } else {
+      // 其他错误
+      log("摄像头启动失败[" + errName + "]: " + msg, "err");
+      setStatus("error", "摄像头不可用", msg);
+    }
+    btnStart.disabled = false;  // 允许重试
+  }
+}
+
+/* ============================================================ */
+/* 十五、停止检测                                                */
+/* ============================================================ */
+function stopDetection(){
+  isRunning = false;
+  // 清除定时器
+  if(detectTimer){ clearTimeout(detectTimer); detectTimer = null; }
+  // 关闭摄像头流
+  if(stream){
+    stream.getTracks().forEach(function(t){ t.stop(); });
+    stream = null;
+  }
+  video.srcObject = null;
+  // 清空画布
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  placeholder.style.display = "flex";
+  // 恢复按钮状态
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+  resultList.innerHTML = '<div class="result-empty">已停止</div>';
+  resultCount.textContent = "0 项";
+  fpsEl.textContent = "";
+  setStatus("ready", "已停止", "点击「开始检测」重新开始");
+  log("检测已停止");
+}
+
+/* ============================================================ */
+/* 十六、初始化：检查本地 ort + 加载模型                          */
+/* ============================================================ */
+async function init(){
+  /* --- 第一步：检查本地 ort.min.js 是否加载成功 --- */
+  if(typeof ort === "undefined"){
+    setStatus("error", "ort.min.js 未加载", "请确保 ort.min.js 与 HTML 在同一目录");
+    log("本地 ort.min.js 加载失败，请检查文件是否存在", "err");
+    return;
+  }
+
+  /* --- 第二步：配置 ONNX Runtime Web（本地 wasm） --- */
+  try {
+    // WASM 路径设为当前目录（ort-wasm.wasm 与 HTML 同目录）
+    ort.env.wasm.wasmPaths = "./";
+    // 单线程模式（避免 SharedArrayBuffer 跨域隔离要求）
+    ort.env.wasm.numThreads = 1;
+    // 禁用 SIMD，确保只加载 ort-wasm.wasm（不需要 ort-wasm-simd.wasm）
+    ort.env.wasm.simd = false;
+    log("ONNX Runtime Web 已就绪（本地引入），WASM 路径: ./", "ok");
+  } catch(e){
+    log("ONNX Runtime 配置警告: " + e.message, "warn");
+  }
+
+  /* --- 第三步：加载 YOLOv8 ONNX 模型 --- */
+  setStatus("loading", "正在加载模型…", MODEL_PATH);
+  log("开始加载模型: " + MODEL_PATH);
+
+  try {
+    // 通过 fetch 读取模型文件为 ArrayBuffer
+    var response = await fetch(MODEL_PATH);
+    if(!response.ok){
+      throw new Error("HTTP " + response.status + " — 请确保 exp-3.onnx 与 HTML 在同一目录，且通过 http:// 访问");
+    }
+    var arrayBuffer = await response.arrayBuffer();
+
+    // 创建推理会话（使用 WASM 后端）
+    session = await ort.InferenceSession.create(arrayBuffer, {
+      executionProviders: ["wasm"]
+    });
+
+    log("模型加载成功", "ok");
+    log("输入: " + session.inputNames[0] + " | 输出: " + session.outputNames[0], "ok");
+    setStatus("ready", "模型已就绪", "点击「开始检测」");
+    btnStart.disabled = false;
+
+  } catch(e){
+    log("模型加载失败: " + e.message, "err");
+    setStatus("error", "模型加载失败", "请确保 exp-3.onnx 在同一目录");
+  }
+}
+
+/* ============================================================ */
+/* 十八、事件绑定 + 启动                                          */
+/* ============================================================ */
+btnStart.addEventListener("click", startDetection);
+btnStop.addEventListener("click", stopDetection);
+
+log("页面已加载，开始初始化…");
+init();
+
+})();
+</script>
+</body>
+</html>
